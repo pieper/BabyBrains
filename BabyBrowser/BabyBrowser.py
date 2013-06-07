@@ -1,5 +1,6 @@
 import os
 import unittest
+import subprocess
 import vtkITK
 from __main__ import vtk, qt, ctk, slicer
 
@@ -112,6 +113,7 @@ class BabyBrowserWidget:
     #
     parametersCollapsibleButton = ctk.ctkCollapsibleButton()
     parametersCollapsibleButton.text = "Parameters"
+    parametersCollapsibleButton.collapsed = True
     self.layout.addWidget(parametersCollapsibleButton)
 
     # Layout within the dummy collapsible button
@@ -165,6 +167,8 @@ class BabyBrowserWidget:
     # Add vertical spacer
     self.layout.addStretch(1)
 
+  def cleanup(self):
+    pass
 
   def onLoad(self):
     """Load data with the current path and pattern.  Pattern should include %d.
@@ -219,10 +223,16 @@ class BabyBrowserWidget:
     while item:
       parent.layout().removeItem(item)
       item = parent.layout().itemAt(0)
+
+    # delete the old widget instance
+    if hasattr(globals()['slicer'].modules, widgetName):
+      getattr(globals()['slicer'].modules, widgetName).cleanup()
+
     # create new widget inside existing parent
     globals()[widgetName.lower()] = eval(
         'globals()["%s"].%s(parent)' % (moduleName, widgetName))
     globals()[widgetName.lower()].setup()
+    setattr(globals()['slicer'].modules, widgetName, globals()[widgetName.lower()])
 
   def onReloadAndTest(self,moduleName="BabyBrowser"):
     try:
@@ -252,7 +262,7 @@ class BabyBrowserLogic:
     self.images = None
     self.rasToIJK = None
 
-  def loadBabies(self,directoryPath,pattern,maxIndex=4):
+  def loadBabies(self,directoryPath,pattern,maxIndex=None):
     self.images = []
     filePaths = []
     index = 1
@@ -263,7 +273,7 @@ class BabyBrowserLogic:
         break
       filePaths.append(filePath)
       index += 1
-      if index > maxIndex:
+      if maxIndex and index > maxIndex:
         break
 
     if len(filePaths) == 0:
@@ -340,6 +350,52 @@ class BabyBrowserLogic:
       slicer.mrmlScene.AddNode(transform)
       babyVolume.SetAndObserveTransformNodeID(transform.GetID())
     return babyVolume
+
+  def biasCorrect(self,filePathIn,filePathOut):
+    args = [
+      os.environ['SLICER_HOME']+"/lib/Slicer-4.2/cli-modules/N4ITKBiasFieldCorrection",
+      "--inputimage " + filePathIn,
+      "--outputimage " + filePathOut,
+      "--meshresolution 1,1,1",
+      "--splinedistance 0",
+      "--bffwhm 0",
+      "--iterations 500,400,300",
+      "--convergencethreshold 0.0001",
+      "--bsplineorder 3",
+      "--shrinkfactor 4",
+      "--wienerfilternoise 0",
+      "--nhistogrambins 0",
+      ]
+    self.process = subprocess.Popen(args,
+                                      stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE)
+    line = self.process.stdout.readline()
+    while line != '':
+      print(line)
+      line = self.process.stdout.readline()
+      slicer.app.processEvents()
+
+    self.process.wait()
+
+  def biasCorrectAll(self):
+    """Run the bias corrector on all loaded baby volumes"""
+    for filePath in self.images.keys():
+      print(filePath)
+      fileName = os.path.basename(filePath)
+      origDir = os.path.dirname(filePath)
+      dataDir = os.path.dirname(origDir)
+      correctedDir = os.path.join(dataDir,'corrected')
+      if not os.path.exists(correctedDir):
+        os.mkdir(correctedDir)
+      correctedPath = os.path.join(correctedDir,fileName)
+      print ('running: biasCorrect(%s,%s)' % (filePath,correctedPath))
+      self.biasCorrect(filePath,correctedPath)
+
+
+
+
+
 
   def hasImageData(self,volumeNode):
     """This is a dummy logic method that 
