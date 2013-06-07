@@ -1,5 +1,6 @@
 import os
 import unittest
+import vtkITK
 from __main__ import vtk, qt, ctk, slicer
 
 #
@@ -8,15 +9,15 @@ from __main__ import vtk, qt, ctk, slicer
 
 class BabyBrowser:
   def __init__(self, parent):
-    parent.title = "BabyBrowser" # TODO make this more human readable by adding spaces
-    parent.categories = ["Examples"]
+    parent.title = "Baby Browser"
+    parent.categories = ["Work in Progress"]
     parent.dependencies = []
-    parent.contributors = ["Jean-Christophe Fillion-Robin (Kitware), Steve Pieper (Isomics)"] # replace with "Firstname Lastname (Org)"
+    parent.contributors = ["Steve Pieper (Isomics)"]
     parent.helpText = """
-    This is an example of scripted loadable module bundled in an extension.
+    This module helps organize and process collections of volumes
     """
     parent.acknowledgementText = """
-    This file was originally developed by Jean-Christophe Fillion-Robin, Kitware Inc. and Steve Pieper, Isomics, Inc.  and was partially funded by NIH grant 3P41RR013218-12S1.
+    This file was originally developed by Steve Pieper, Isomics, Inc.  and was partially funded by NIH grants 1R01EB014947-013 and P41RR013218-12S1.
 """ # replace with organization, grant and thanks.
     self.parent = parent
 
@@ -39,6 +40,7 @@ class BabyBrowser:
 
 class BabyBrowserWidget:
   def __init__(self, parent = None):
+    self.logic = BabyBrowserLogic()
     if not parent:
       self.parent = slicer.qMRMLWidget()
       self.parent.setLayout(qt.QVBoxLayout())
@@ -77,6 +79,33 @@ class BabyBrowserWidget:
     self.reloadAndTestButton.toolTip = "Reload this module and then run the self tests."
     reloadFormLayout.addWidget(self.reloadAndTestButton)
     self.reloadAndTestButton.connect('clicked()', self.onReloadAndTest)
+
+    #
+    # Data Area
+    #
+    dataCollapsibleButton = ctk.ctkCollapsibleButton()
+    dataCollapsibleButton.text = "Data"
+    self.layout.addWidget(dataCollapsibleButton)
+    dataFormLayout = qt.QFormLayout(dataCollapsibleButton)
+
+    # pick the data directory and file pattern
+    self.pathEdit = ctk.ctkPathLineEdit()
+    self.pathEdit.setCurrentPath('/Users/pieper/data/babybrains/orig/')
+    self.patternEdit = qt.QLineEdit()
+    self.patternEdit.setText('mprage-%d.mgz')
+    self.loadButton = qt.QPushButton()
+    self.loadButton.text = "Load Data"
+    self.dataSlider = ctk.ctkSliderWidget()
+    self.dataSlider.setDecimals(0)
+    self.dataSlider.enabled = False
+    dataFormLayout.addRow("Data path: ", self.pathEdit)
+    dataFormLayout.addRow("Data pattern: ", self.patternEdit)
+    dataFormLayout.addRow(self.loadButton)
+    dataFormLayout.addRow("Data Select", self.dataSlider)
+
+    self.loadButton.connect('clicked()', self.onLoad)
+    self.dataSlider.connect('valueChanged(double)', self.onDataSlider)
+
 
     #
     # Parameters Area
@@ -135,6 +164,18 @@ class BabyBrowserWidget:
 
     # Add vertical spacer
     self.layout.addStretch(1)
+
+
+  def onLoad(self):
+    """Load data with the current path and pattern.  Pattern should include %d.
+    We load from 1 until the file does not exist"""
+    self.logic.loadBabies(self.pathEdit.currentPath, self.patternEdit.text)
+    self.dataSlider.enabled = len(self.logic.images) !=0
+    self.dataSlider.maximum = len(self.logic.images) - 1
+
+  def onDataSlider(self,value):
+    self.logic.showBaby(int(value))
+
 
   def onSelect(self):
     self.applyButton.enabled = self.inputSelector.currentNode() and self.outputSelector.currentNode()
@@ -208,7 +249,97 @@ class BabyBrowserLogic:
   requiring an instance of the Widget
   """
   def __init__(self):
-    pass
+    self.images = None
+    self.rasToIJK = None
+
+  def loadBabies(self,directoryPath,pattern,maxIndex=4):
+    self.images = []
+    filePaths = []
+    index = 1
+    import os.path
+    while True:
+      filePath = os.path.join(directoryPath, pattern % index)
+      if not os.path.exists(filePath):
+        break
+      filePaths.append(filePath)
+      index += 1
+      if index > maxIndex:
+        break
+
+    if len(filePaths) == 0:
+      return
+      
+    middleBabyPath = filePaths[len(filePaths)/2]
+    babyVolume = self.babyVolume(middleBabyPath)
+
+    #transtor = slicer.vtkMRMLTransformStorageNode()
+    reader = reader = vtkITK.vtkITKArchetypeImageSeriesScalarReader()
+    reader.SetSingleFile(1)
+    reader.SetUseOrientationFromFile(1)
+    #reader.SetDesiredCoordinateOrientationToAxial()
+    reader.SetOutputScalarTypeToNative()
+    reader.SetUseNativeOriginOn()
+    changeInfo = vtk.vtkImageChangeInformation()
+    changeInfo.SetInputConnection( reader.GetOutputPort() )
+    changeInfo.SetOutputSpacing( 1, 1, 1 )
+    changeInfo.SetOutputOrigin( 0, 0, 0 )
+    self.images = {}
+    self.rasToIJKs = {}
+    #self.toTemplate = {}
+    for filePath in filePaths:
+      print("Loading %s" % filePath)
+      reader.SetArchetype(filePath)
+      changeInfo.Update()
+      self.rasToIJKs[filePath] = vtk.vtkMatrix4x4()
+      self.rasToIJKs[filePath].DeepCopy(reader.GetRasToIjkMatrix())
+      self.images[filePath] = vtk.vtkImageData()
+      self.images[filePath].DeepCopy(changeInfo.GetOutput())
+      #t = template
+      #transDir = self.babydir + '/xformsTo' + t[t.find('/')+1:t.find('.')]
+      #id = file[file.rfind('/')+1:file.find('.')]
+      #transtor.SetFileName(transDir + '/' + id + '.mat')
+      #transtor.ReadData(self.transform)
+      #self.toTemplate[file] = vtk.vtkMatrix4x4()
+      #self.toTemplate[file].DeepCopy(self.transform.GetMatrixTransformToParent())
+
+  def showBaby(self,index):
+    """display the image for the given index.
+    """
+    if not self.images:
+      return
+    filePath = self.images.keys()[index]
+    image = self.images[filePath]
+    rasToIJK = self.rasToIJKs[filePath]
+    #toTemplate = self.toTemplate[self.samples[sampleage][which]]
+    self.babyVolume().SetRASToIJKMatrix(rasToIJK)
+    self.babyVolume().SetAndObserveImageData(image)
+    #self.transform.GetMatrixTransformToParent().DeepCopy(toTemplate)
+
+
+  def babyVolume(self,filePath=None,name='baby'):
+    """Make a volume node as the target for the babys"""
+
+    babyVolume = slicer.util.getNode(name)
+    # create the volume for displaying the baby 
+    if not babyVolume:
+      volumeLogic = slicer.modules.volumes.logic()
+      babyVolume = volumeLogic.AddArchetypeScalarVolume (filePath, "baby", 0, None)
+      displayNode = babyVolume.GetDisplayNode()
+      displayNode.SetWindow(3000)
+      displayNode.SetLevel(1700)
+
+      # automatically select the volume to display
+      mrmlLogic = slicer.app.applicationLogic()
+      selNode = mrmlLogic.GetSelectionNode()
+      selNode.SetReferenceActiveVolumeID(babyVolume.GetID())
+      mrmlLogic.PropagateVolumeSelection()
+
+      # Create transform node
+      transform = slicer.vtkMRMLLinearTransformNode()
+      transform.SetName('Baby to Template' )
+      slicer.mrmlScene.AddNode(transform)
+      babyVolume.SetAndObserveTransformNodeID(transform.GetID())
+    return babyVolume
 
   def hasImageData(self,volumeNode):
     """This is a dummy logic method that 
