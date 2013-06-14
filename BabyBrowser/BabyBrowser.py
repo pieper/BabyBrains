@@ -91,9 +91,9 @@ class BabyBrowserWidget:
 
     # pick the data directory and file pattern
     self.pathEdit = ctk.ctkPathLineEdit()
-    self.pathEdit.setCurrentPath('/Users/pieper/data/babybrains/orig/')
+    self.pathEdit.setCurrentPath('/Users/pieper/data/babybrains/to_mprage-19/')
     self.patternEdit = qt.QLineEdit()
-    self.patternEdit.setText('mprage-%d.mgz')
+    self.patternEdit.setText('mprage-%d.nrrd')
     self.loadButton = qt.QPushButton()
     self.loadButton.text = "Load Data"
     self.dataSlider = ctk.ctkSliderWidget()
@@ -243,7 +243,7 @@ class BabyBrowserWidget:
     except Exception, e:
       import traceback
       traceback.print_exc()
-      qt.QMessageBox.warning(slicer.util.mainWindow(), 
+      qt.QMessageBox.warning(slicer.util.mainWindow(),
           "Reload and Test", 'Exception!\n\n' + str(e) + "\n\nSee Python Console for Stack Trace")
 
 
@@ -252,8 +252,8 @@ class BabyBrowserWidget:
 #
 
 class BabyBrowserLogic:
-  """This class should implement all the actual 
-  computation done by your module.  The interface 
+  """This class should implement all the actual
+  computation done by your module.  The interface
   should be such that other python code can import
   this class and make use of the functionality without
   requiring an instance of the Widget
@@ -278,7 +278,7 @@ class BabyBrowserLogic:
 
     if len(filePaths) == 0:
       return
-      
+
     middleBabyPath = filePaths[len(filePaths)/2]
     babyVolume = self.babyVolume(middleBabyPath)
 
@@ -325,18 +325,18 @@ class BabyBrowserLogic:
     self.babyVolume().SetAndObserveImageData(image)
     #self.transform.GetMatrixTransformToParent().DeepCopy(toTemplate)
 
-
   def babyVolume(self,filePath=None,name='baby'):
     """Make a volume node as the target for the babys"""
 
     babyVolume = slicer.util.getNode(name)
-    # create the volume for displaying the baby 
+    # create the volume for displaying the baby
     if not babyVolume:
       volumeLogic = slicer.modules.volumes.logic()
       babyVolume = volumeLogic.AddArchetypeScalarVolume (filePath, "baby", 0, None)
       displayNode = babyVolume.GetDisplayNode()
-      displayNode.SetWindow(3000)
-      displayNode.SetLevel(1700)
+      displayNode.SetAutoWindowLevel(False)
+      displayNode.SetWindow(470)
+      displayNode.SetLevel(250)
 
       # automatically select the volume to display
       mrmlLogic = slicer.app.applicationLogic()
@@ -366,56 +366,142 @@ class BabyBrowserLogic:
       "--wienerfilternoise 0",
       "--nhistogrambins 0",
       ]
-    self.process = subprocess.Popen(args,
-                                      stdin=subprocess.PIPE,
-                                      stdout=subprocess.PIPE,
-                                      stderr=subprocess.PIPE)
-    line = self.process.stdout.readline()
-    while line != '':
-      print(line)
-      line = self.process.stdout.readline()
-      slicer.app.processEvents()
-
-    self.process.wait()
+    self.process = subprocess.call(args)
 
   def biasCorrectAll(self):
     """Run the bias corrector on all loaded baby volumes"""
     for filePath in self.images.keys():
       print(filePath)
       fileName = os.path.basename(filePath)
+      fileRoot = os.path.splitext(fileName)[0]
       origDir = os.path.dirname(filePath)
       dataDir = os.path.dirname(origDir)
       correctedDir = os.path.join(dataDir,'corrected')
       if not os.path.exists(correctedDir):
         os.mkdir(correctedDir)
-      correctedPath = os.path.join(correctedDir,fileName)
+      correctedPath = os.path.join(correctedDir,fileRoot+'.nrrd')
       print ('running: biasCorrect(%s,%s)' % (filePath,correctedPath))
       self.biasCorrect(filePath,correctedPath)
 
+  def register(self,filePathFixed,filePathMoving,filePathTransformed,filePathTransform):
+    args = [
+      os.path.join(os.environ['SLICER_HOME'],"lib/Slicer-4.2/cli-modules/BRAINSFitEZ"),
+      "--fixedVolume " + filePathFixed,
+      "--movingVolume " + filePathMoving,
+      "--outputVolume " + filePathTransformed,
+      "--linearTransform " + filePathTransform,
+      "--useRigid",
+      "--useAffine",
+      "--initializeTransformMode Off",
+      "--numberOfSamples 100000",
+      "--splineGridSize 14,10,12",
+      "--numberOfIterations 1500",
+      "--maskProcessingMode NOMASK",
+      "--outputVolumePixelType float",
+      "--backgroundFillValue 0",
+      "--maskInferiorCutOffFromCenter 1000",
+      "--interpolationMode Linear",
+      "--minimumStepLength 0.005",
+      "--translationScale 1000",
+      "--reproportionScale 1",
+      "--skewScale 1",
+      "--maxBSplineDisplacement 0",
+      "--numberOfHistogramBins 50",
+      "--numberOfMatchPoints 10",
+      "--fixedVolumeTimeIndex 0",
+      "--movingVolumeTimeIndex 0",
+      "--medianFilterSize 0,0,0",
+      "--removeIntensityOutliers 0",
+      "--useCachingOfBSplineWeightsMode ON",
+      "--useExplicitPDFDerivativesMode AUTO",
+      "--ROIAutoDilateSize 0",
+      "--ROIAutoClosingSize 9",
+      "--relaxationFactor 0.5",
+      "--maximumStepLength 0.2",
+      "--failureExitCode -1",
+      "--numberOfThreads -1",
+      "--forceMINumberOfThreads -1",
+      "--debugLevel 0",
+      "--costFunctionConvergenceFactor 1e+09",
+      "--projectedGradientTolerance 0",
+      "--costMetric MMI",
+      ]
+    self.process = subprocess.call(args)
 
+  def histogramMatch(self,filePathIn,filePathReference,filePathOut):
+    args = [
+      os.path.join(os.environ['SLICER_HOME'],"lib/Slicer-4.2/cli-modules/HistogramMatching"),
+      "--numberOfHistogramLevels 128",
+      "--numberOfMatchPoints 10",
+      filePathIn,
+      filePathReference,
+      filePathOut,
+      ]
+    self.process = subprocess.call(args)
 
+  def biasCorrectAll(self):
+    """Run the bias corrector on all loaded baby volumes"""
+    for filePath in self.images.keys():
+      print(filePath)
+      fileName = os.path.basename(filePath)
+      fileRoot = os.path.splitext(fileName)[0]
+      origDir = os.path.dirname(filePath)
+      dataDir = os.path.dirname(origDir)
+      correctedDir = os.path.join(dataDir,'corrected')
+      if not os.path.exists(correctedDir):
+        os.mkdir(correctedDir)
+      correctedPath = os.path.join(correctedDir,fileRoot+'.nrrd')
+      print ('running: biasCorrect(%s,%s)' % (filePath,correctedPath))
+      self.biasCorrect(filePath,correctedPath)
+    print('finished')
 
-
-
-  def hasImageData(self,volumeNode):
-    """This is a dummy logic method that 
-    returns true if the passed in volume
-    node has valid image data
+  def registerAll(self,template=None):
+    """Run the registration on all loaded baby volumes.
+    Use template (filePath) if given, else use arbitrary one.
+slicer.modules.BabyBrowserWidget.onReload(); l = slicer.modules.BabyBrowserWidget.logic; slicer.modules.BabyBrowserWidget.onLoad() ; l.registerAll()
     """
-    if not volumeNode:
-      print('no volume node')
-      return False
-    if volumeNode.GetImageData() == None:
-      print('no image data')
-      return False
-    return True
+    if not template:
+      template = self.images.keys()[0]
+    templateRoot = os.path.splitext(os.path.basename(template))[0]
+    for filePath in self.images.keys():
+      print(filePath)
+      fileName = os.path.basename(filePath)
+      fileRoot = os.path.splitext(fileName)[0]
+      origDir = os.path.dirname(filePath)
+      dataDir = os.path.dirname(origDir)
+      transformedDir = os.path.join(dataDir,'to_%s' % templateRoot)
+      if not os.path.exists(transformedDir):
+        os.mkdir(transformedDir)
+      transformedPath = os.path.join(transformedDir,fileRoot+'.nrrd')
+      transformPath = os.path.join(transformedDir,fileRoot+'.tfm')
+      print ('running: registration(%s,%s,%s,%s)' % 
+                  (template,filePath,transformedPath,transformPath))
+      self.register(template,filePath,transformedPath,transformPath)
+    print('finished')
 
-  def run(self,inputVolume,outputVolume):
+  def histogramMatchAll(self,reference=None):
+    """Run a histogram match on all images.
+    Use reference (filePath) if given, else use arbitrary one.
+  
+slicer.modules.BabyBrowserWidget.onReload(); l = slicer.modules.BabyBrowserWidget.logic; slicer.modules.BabyBrowserWidget.onLoad(); l.histogramMatchAll('/Users/pieper/data/babybrains/to_mprage-19/mprage-19.nrrd')
     """
-    Run the actual algorithm
-    """
-    return True
-
+    if not reference:
+      reference = self.images.keys()[0]
+    referenceRoot = os.path.splitext(os.path.basename(reference))[0]
+    for filePath in self.images.keys():
+      print(filePath)
+      fileName = os.path.basename(filePath)
+      fileRoot = os.path.splitext(fileName)[0]
+      origDir = os.path.dirname(filePath)
+      dataDir = os.path.dirname(origDir)
+      matchedDir = os.path.join(dataDir,'to_%s-Matched' % referenceRoot)
+      if not os.path.exists(matchedDir):
+        os.mkdir(matchedDir)
+      matchedPath = os.path.join(matchedDir,fileRoot+'.nrrd')
+      print ('running: histogramMatch(%s,%s,%s)' % 
+                  (filePath,reference,matchedPath))
+      self.histogramMatch(filePath,reference,matchedPath)
+    print('finished')
 
 class BabyBrowserTest(unittest.TestCase):
   """
